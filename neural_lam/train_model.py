@@ -66,6 +66,16 @@ def main(input_args=None):
         "set 'ntasks-per-node' in the slurm setup (default: auto)",
     )
     parser.add_argument(
+        "--sharding_strategy",
+        type=str,
+        choices=["NO_SHARD", "HYBRID_SHARD", "FULL_SHARD", "SHARD_GRAD_OP"],
+        default="NO_SHARD",
+        help="Sharding strategy. NO_SHARD is ddp, HYBRID_SHARD is sharding "
+        "within a machine but replicating across machines, FULL_SHARD is "
+        "sharding everywhere, SHARD_GRAD_OP is like full shard, but only "
+        "gradients and optimizers, not model parameters (default: NO_SHARD)",
+    )
+    parser.add_argument(
         "--epochs",
         type=int,
         default=200,
@@ -273,6 +283,20 @@ def main(input_args=None):
             devices = [int(i) for i in args.devices]
         except ValueError:
             raise ValueError("devices should be 'auto' or a list of integers")
+    
+    # Hybrid strategy shards within nodes and replicates across nodes, so 
+    # sharding size is local world size and replication size is number of nodes
+    if args.sharding_strategy == "HYBRID_SHARD":
+        sharding_size = torch.cuda.device_count()
+        replication_size = args.num_nodes
+        device_mesh = (replication_size, sharding_size)
+    else:
+        device_mesh = None
+
+    if args.sharding_strategy == "NO_SHARD":
+        strategy = pl.strategies.DDPStrategy()
+    else:
+        strategy = pl.strategies.FSDPStrategy(sharding_strategy=args.sharding_strategy, device_mesh=device_mesh)
 
     # Load model parameters Use new args for model
     ModelClass = MODELS[args.model]
@@ -301,7 +325,7 @@ def main(input_args=None):
     trainer = pl.Trainer(
         max_epochs=args.epochs,
         deterministic=True,
-        strategy="ddp",
+        strategy=strategy,
         accelerator=device_name,
         num_nodes=args.num_nodes,
         devices=devices,
