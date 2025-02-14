@@ -101,6 +101,15 @@ class BaseHiGraphModel(BaseGraphModel):
             ]
         )
 
+        self.sub_model_list.extend([
+            'mesh_embedders',
+            'mesh_same_embedders',
+            'mesh_up_embedders',
+            'mesh_down_embedders',
+            'mesh_init_gnns',
+            'mesh_read_gnns',
+        ])
+
     def get_num_mesh(self):
         """
         Compute number of mesh nodes from loaded features,

@@ -79,6 +79,17 @@ class BaseGraphModel(ARModel):
             layer_norm=False,
         )  # No layer norm on this one
 
+        # Note which modules to parallelize
+        self.sub_model_list.extend([
+            'grid_embedder', 
+            'g2m_embedder', 
+            'm2g_embedder', 
+            'g2m_gnn', 
+            'encoding_grid_mlp', 
+            'm2g_gnn', 
+            'output_map', 
+        ])
+
     def get_num_mesh(self):
         """
         Compute number of mesh nodes from loaded features,
