@@ -9,6 +9,12 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 import xarray as xr
+from torch.distributed._composable.fsdp.fully_shard import fully_shard
+from torch.distributed.tensor.parallel import (
+    ColwiseParallel,
+    RowwiseParallel,
+    parallelize_module,
+)
 
 # Local
 from .. import metrics, vis
@@ -16,6 +22,11 @@ from ..config import NeuralLAMConfig
 from ..datastore import BaseDatastore
 from ..loss_weighting import get_state_feature_weighting
 from ..weather_dataset import WeatherDataset
+
+TENSOR_PARALLEL_TYPES = {
+    "colwise": ColwiseParallel,
+    "rowwise": RowwiseParallel,
+}
 
 
 class ARModel(pl.LightningModule):
@@ -146,6 +157,39 @@ class ARModel(pl.LightningModule):
 
         # For storing spatial loss maps during evaluation
         self.spatial_loss_maps = []
+
+        self.sub_model_list = []
+
+    def configure_model(self):
+        """
+        Configure model parallelism.
+        Can include both tensor and data parallelism.
+        Submodels are parallelised if they are in the `sub_model_list`,
+        which can be extended in the model's __init__ method.
+        """
+
+        # Lightning sets up a `self.device_mesh` based on values from
+        # ModelParallelStrategy
+        tp_mesh = self.device_mesh["tensor_parallel"]
+        dp_mesh = self.device_mesh["data_parallel"]
+
+        if tp_mesh.size() > 1:
+            # Use PyTorch's distributed tensor APIs to parallelize the model
+            for submodule in self.sub_model_list:
+                parallelize_module(
+                    getattr(self, submodule),
+                    tp_mesh,
+                    {
+                        submodule: TENSOR_PARALLEL_TYPES[
+                            self.args.tensor_parallel_mode
+                        ]()
+                    },
+                )
+
+        if dp_mesh.size() > 1:
+            # Use PyTorch's FSDP2 APIs to parallelize the model
+            for submodule in self.sub_model_list:
+                fully_shard(getattr(self, submodule), mesh=dp_mesh)
 
     def _create_dataarray_from_tensor(
         self,

@@ -52,6 +52,8 @@ class HiLAMParallel(BaseHiGraphModel):
                 ],
             )
 
+            self.sub_model_list.extend(['processor'])
+
     def hi_processor_step(
         self, mesh_rep_levels, mesh_same_rep, mesh_up_rep, mesh_down_rep
     ):

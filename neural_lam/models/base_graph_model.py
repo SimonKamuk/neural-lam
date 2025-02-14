@@ -82,6 +82,19 @@ class BaseGraphModel(ARModel):
         # Compute indices and define clamping functions
         self.prepare_clamping_params(config, datastore)
 
+        # Note which modules to parallelize
+        self.sub_model_list.extend(
+            [
+                "grid_embedder",
+                "g2m_embedder",
+                "m2g_embedder",
+                "g2m_gnn",
+                "encoding_grid_mlp",
+                "m2g_gnn",
+                "output_map",
+            ]
+        )
+
     def prepare_clamping_params(
         self, config: NeuralLAMConfig, datastore: BaseDatastore
     ):

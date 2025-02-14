@@ -34,6 +34,13 @@ class HiLAM(BaseHiGraphModel):
             [self.make_same_gnns(args) for _ in range(args.processor_layers)]
         )  # Nested lists (proc_steps, num_levels)
 
+        self.sub_model_list.extend([
+            'mesh_down_gnns',
+            'mesh_down_same_gnns',
+            'mesh_up_gnns',
+            'mesh_up_same_gnns',
+        ])
+
     def make_same_gnns(self, args):
         """
         Make intra-level GNNs.

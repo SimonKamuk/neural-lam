@@ -56,6 +56,12 @@ class GraphLAM(BaseGraphModel):
             ],
         )
 
+        self.sub_model_list.extend([
+            'mesh_embedder', 
+            'm2m_embedder', 
+            'processor', 
+        ])
+
     def get_num_mesh(self):
         """
         Compute number of mesh nodes from loaded features,
