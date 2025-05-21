@@ -14,13 +14,14 @@ from loguru import logger
 # Local
 from . import utils
 from .config import load_config_and_datastore
-from .models import GraphLAM, HiLAM, HiLAMParallel
+from .models import GraphLAM, HiLAM, HiLAMParallel, SequentialGNN
 from .weather_dataset import WeatherDataModule
 
 MODELS = {
     "graph_lam": GraphLAM,
     "hi_lam": HiLAM,
     "hi_lam_parallel": HiLAMParallel,
+    "sequential_gnn": SequentialGNN,
 }
 
 
@@ -265,7 +266,7 @@ def main(input_args=None):
     )
 
     # Instantiate model + trainer
-    if torch.cuda.is_available():
+    if torch.cuda.is_available() and False:
         device_name = "cuda"
         torch.set_float32_matmul_precision(
             "high"
