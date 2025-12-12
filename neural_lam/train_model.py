@@ -263,7 +263,7 @@ def main(input_args=None):
     )
 
     # Instantiate model + trainer
-    if torch.cuda.is_available() and False:
+    if torch.cuda.is_available() and args.devices != ["cpu"]:
         device_name = "cuda"
         torch.set_float32_matmul_precision(
             "high"
@@ -272,7 +272,7 @@ def main(input_args=None):
         device_name = "cpu"
 
     # Set devices to use
-    if args.devices == ["auto"]:
+    if args.devices == ["auto"] or args.devices == ["cpu"]:
         devices = "auto"
     else:
         try:

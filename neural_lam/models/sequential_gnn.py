@@ -9,149 +9,21 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 import xarray as xr
-from torch import nn
 
 # Local
 from .. import metrics, utils, vis
 from ..config import NeuralLAMConfig
 from ..datastore import BaseDatastore
-from ..interaction_net import InteractionNet, InteractionNetNew
+from ..interaction_net import InteractionNetNew
 from ..loss_weighting import get_state_feature_weighting
 from ..weather_dataset import WeatherDataset
-
-# from .ar_model import ARModel
 
 
 class SequentialGNN(pl.LightningModule):
     def __init__(self, args, config: NeuralLAMConfig, datastore: BaseDatastore):
         super().__init__()
 
-        self.armodel_init(args, config, datastore)
-        self.basegraphmodel_init(args, config, datastore)
-        self.basehigraphmodel_init(args, config, datastore)
-        self.hilam_init(args, config, datastore)
-
-        mesh_dim = self.mesh_static_features[0].shape[1]
-        mesh_same_dim = self.m2m_features[0].shape[1]
-        mesh_up_dim = self.mesh_up_features[0].shape[1]
-        mesh_down_dim = self.mesh_down_features[0].shape[1]
-        g2m_dim = self.g2m_features.shape[1]
-        m2g_dim = self.m2g_features.shape[1]
-
-        deembed_subgraph_dimension = {
-            "grid": self.grid_dim
-        }  # or double dim if also output std
-        subgraph_feat_dims = {
-            "grid": self.grid_dim,
-            "mesh0": mesh_dim,
-            "mesh1": mesh_dim,
-            "mesh2": mesh_dim,
-        }
-
-        process_edge_feat_dims = {
-            "grid_mesh0": g2m_dim,  # g2m
-            "mesh0_grid": m2g_dim,  # m2g
-        }
-
-        self.num_processor_layers = args.processor_layers + 1
-        # +1 because the first up (mesh init) and down (read out) steps are
-        # not counted as processor layers
-        self.process_steps = ["grid_mesh0"]
-        for proc in range(self.num_processor_layers):
-            for i in range(self.num_levels - 1):
-                if proc != 0:  # because mesh init does not have a "same" gnn
-                    self.process_steps.append(f"mesh{i}_mesh{i}_up_proc{proc}")
-                    process_edge_feat_dims[
-                        f"mesh{i}_mesh{i}_up_proc{proc}"
-                    ] = mesh_same_dim
-                self.process_steps.append(f"mesh{i}_mesh{i+1}_proc{proc}")
-                process_edge_feat_dims[
-                    f"mesh{i}_mesh{i+1}_proc{proc}"
-                ] = mesh_up_dim
-            for i in reversed(range(self.num_levels - 1)):
-                if (
-                    proc != self.num_processor_layers - 1
-                ):  # because mesh read out does not have a "same" gnn
-                    self.process_steps.append(
-                        f"mesh{i+1}_mesh{i+1}_down_proc{proc}"
-                    )
-                    process_edge_feat_dims[
-                        f"mesh{i+1}_mesh{i+1}_down_proc{proc}"
-                    ] = mesh_same_dim
-                self.process_steps.append(f"mesh{i+1}_mesh{i}_proc{proc}")
-                process_edge_feat_dims[
-                    f"mesh{i+1}_mesh{i}_proc{proc}"
-                ] = mesh_down_dim
-        self.process_steps.append("mesh0_mesh0_proclast")
-        process_edge_feat_dims["mesh0_mesh0_proclast"] = mesh_same_dim
-        self.process_steps.append("mesh0_grid")
-
-        self.model = SequentialGNNModel(
-            # dict with subgraph names as keys and node feature dimensions as
-            # values
-            subgraph_feat_dims,
-            # list of subgraph names to deembed
-            deembed_subgraph_dimension,
-            # dict with process step names as keys and edge feature dimensions
-            # as values
-            process_edge_feat_dims,
-            # for both encoders and interaction nets
-            args.hidden_dim,
-            # for both encoders and interaction nets
-            args.hidden_layers,
-        )
-
-        # g2m_edge_index shape: torch.Size([2, 12716])
-        # g2m_edge_index dim 0 min: 819, max: 8498
-        # g2m_edge_index dim 1 min: 0, max: 728
-        # mesh0 edge_index shape: torch.Size([2, 5512])
-        # mesh0 edge_index dim 0 min: 0, max: 728
-        # mesh1 edge_index shape: torch.Size([2, 544])
-        # mesh1 edge_index dim 0 min: 729, max: 809
-        # mesh2 edge_index shape: torch.Size([2, 40])
-        # mesh2 edge_index dim 0 min: 810, max: 818
-
-        self.edge_index = {
-            "grid_mesh0": self.g2m_edge_index,
-            "mesh0_grid": self.m2g_edge_index,
-            **{
-                f"mesh{i}_mesh{i+1}_proc{proc}": self.mesh_up_edge_index[i]
-                for i in range(self.num_levels - 1)
-                for proc in range(self.num_processor_layers)
-            },
-            **{
-                f"mesh{i+1}_mesh{i}_proc{proc}": self.mesh_down_edge_index[i]
-                for i in range(self.num_levels - 1)
-                for proc in range(self.num_processor_layers)
-            },
-            **{
-                f"mesh{i}_mesh{i}_up_proc{proc}": self.m2m_edge_index[i]
-                for i in range(self.num_levels - 1)
-                for proc in range(self.num_processor_layers)
-            },
-            **{
-                f"mesh{i}_mesh{i}_down_proc{proc}": self.m2m_edge_index[i]
-                for i in range(1, self.num_levels)
-                for proc in range(self.num_processor_layers)
-            },
-            **{"mesh0_mesh0_proclast": self.m2m_edge_index[0]},
-        }
-
-        subgraph_start_index = [0] + list(np.cumsum(self.level_mesh_sizes))
-        self.node_index = {
-            **{
-                f"mesh{i}": torch.arange(
-                    subgraph_start_index[i], subgraph_start_index[i + 1]
-                )
-                for i in range(0, self.num_levels)
-            },
-            "grid": torch.arange(
-                subgraph_start_index[-1],
-                subgraph_start_index[-1] + self.num_grid_nodes,
-            ),
-        }
-
-    def armodel_init(self, args, config, datastore):
+        # armodel init
         self.save_hyperparameters(ignore=["datastore"])
         self.args = args
         self._datastore = datastore
@@ -269,7 +141,8 @@ class SequentialGNN(pl.LightningModule):
         # For storing spatial loss maps during evaluation
         self.spatial_loss_maps = []
 
-    def basegraphmodel_init(self, args, config, datastore):
+        # basegraphmodel init
+
         # Load graph with static features
         # NOTE: (IMPORTANT!) mesh nodes MUST have the first
         # num_mesh_nodes indices,
@@ -295,46 +168,12 @@ class SequentialGNN(pl.LightningModule):
         self.g2m_edges, g2m_dim = self.g2m_features.shape
         self.m2g_edges, m2g_dim = self.m2g_features.shape
 
-        # Define sub-models
-        # Feature embedders for grid
         self.mlp_blueprint_end = [args.hidden_dim] * (args.hidden_layers + 1)
-        self.grid_embedder = utils.make_mlp(
-            [self.grid_dim] + self.mlp_blueprint_end
-        )
-        self.g2m_embedder = utils.make_mlp([g2m_dim] + self.mlp_blueprint_end)
-        self.m2g_embedder = utils.make_mlp([m2g_dim] + self.mlp_blueprint_end)
-
-        # GNNs
-        # encoder
-        self.g2m_gnn = InteractionNet(
-            self.g2m_edge_index,
-            args.hidden_dim,
-            hidden_layers=args.hidden_layers,
-            update_edges=False,
-        )
-        self.encoding_grid_mlp = utils.make_mlp(
-            [args.hidden_dim] + self.mlp_blueprint_end
-        )
-
-        # decoder
-        self.m2g_gnn = InteractionNet(
-            self.m2g_edge_index,
-            args.hidden_dim,
-            hidden_layers=args.hidden_layers,
-            update_edges=False,
-        )
-
-        # Output mapping (hidden_dim -> output_dim)
-        self.output_map = utils.make_mlp(
-            [args.hidden_dim] * (args.hidden_layers + 1)
-            + [self.grid_output_dim],
-            layer_norm=False,
-        )  # No layer norm on this one
 
         # Compute indices and define clamping functions
         self.prepare_clamping_params(config, datastore)
 
-    def basehigraphmodel_init(self, args, config, datastore):
+        # basehigraphmodel init
 
         # Track number of nodes, edges on each level
         # Flatten lists for efficient embedding
@@ -361,81 +200,121 @@ class SequentialGNN(pl.LightningModule):
                 utils.rank_zero_print(
                     f" - {up_edges} up edges, {down_edges} down edges"
                 )
-        # Embedders
-        # Assume all levels have same static feature dimensionality
+
         mesh_dim = self.mesh_static_features[0].shape[1]
         mesh_same_dim = self.m2m_features[0].shape[1]
         mesh_up_dim = self.mesh_up_features[0].shape[1]
         mesh_down_dim = self.mesh_down_features[0].shape[1]
+        g2m_dim = self.g2m_features.shape[1]
+        m2g_dim = self.m2g_features.shape[1]
 
-        # Separate mesh node embedders for each level
-        self.mesh_embedders = nn.ModuleList(
-            [
-                utils.make_mlp([mesh_dim] + self.mlp_blueprint_end)
-                for _ in range(self.num_levels)
-            ]
-        )
-        self.mesh_same_embedders = nn.ModuleList(
-            [
-                utils.make_mlp([mesh_same_dim] + self.mlp_blueprint_end)
-                for _ in range(self.num_levels)
-            ]
-        )
-        self.mesh_up_embedders = nn.ModuleList(
-            [
-                utils.make_mlp([mesh_up_dim] + self.mlp_blueprint_end)
-                for _ in range(self.num_levels - 1)
-            ]
-        )
-        self.mesh_down_embedders = nn.ModuleList(
-            [
-                utils.make_mlp([mesh_down_dim] + self.mlp_blueprint_end)
-                for _ in range(self.num_levels - 1)
-            ]
+        deembed_subgraph_dimension = {
+            "grid": self.grid_output_dim
+        }  # or double dim if also output std
+        subgraph_feat_dims = {
+            "grid": self.grid_dim,
+            "mesh0": mesh_dim,
+            "mesh1": mesh_dim,
+            "mesh2": mesh_dim,
+        }
+
+        process_edge_feat_dims = {
+            "grid_mesh0": g2m_dim,  # g2m
+            "mesh0_grid": m2g_dim,  # m2g
+        }
+
+        self.num_processor_layers = args.processor_layers + 1
+        # +1 because the first up (mesh init) and down (read out) steps are
+        # not counted as processor layers
+        self.process_steps = ["grid_mesh0"]
+        for proc in range(self.num_processor_layers):
+            for i in range(self.num_levels - 1):
+                if proc != 0:  # because mesh init does not have a "same" gnn
+                    self.process_steps.append(f"mesh{i}_mesh{i}_up_proc{proc}")
+                    process_edge_feat_dims[
+                        f"mesh{i}_mesh{i}_up_proc{proc}"
+                    ] = mesh_same_dim
+                self.process_steps.append(f"mesh{i}_mesh{i+1}_proc{proc}")
+                process_edge_feat_dims[
+                    f"mesh{i}_mesh{i+1}_proc{proc}"
+                ] = mesh_up_dim
+            for i in reversed(range(self.num_levels - 1)):
+                if (
+                    proc != self.num_processor_layers - 1
+                ):  # because mesh read out does not have a "same" gnn
+                    self.process_steps.append(
+                        f"mesh{i+1}_mesh{i+1}_down_proc{proc}"
+                    )
+                    process_edge_feat_dims[
+                        f"mesh{i+1}_mesh{i+1}_down_proc{proc}"
+                    ] = mesh_same_dim
+                self.process_steps.append(f"mesh{i+1}_mesh{i}_proc{proc}")
+                process_edge_feat_dims[
+                    f"mesh{i+1}_mesh{i}_proc{proc}"
+                ] = mesh_down_dim
+        self.process_steps.append("mesh0_mesh0_proclast")
+        process_edge_feat_dims["mesh0_mesh0_proclast"] = mesh_same_dim
+        self.process_steps.append("mesh0_grid")
+
+        self.model = SequentialGNNModel(
+            # dict with subgraph names as keys and node feature dimensions as
+            # values
+            subgraph_feat_dims,
+            # list of subgraph names to deembed
+            deembed_subgraph_dimension,
+            # dict with process step names as keys and edge feature dimensions
+            # as values
+            process_edge_feat_dims,
+            # for both encoders and interaction nets
+            args.hidden_dim,
+            # for both encoders and interaction nets
+            args.hidden_layers,
         )
 
-        # Instantiate GNNs
-        # Init GNNs
-        self.mesh_init_gnns = nn.ModuleList(
-            [
-                InteractionNet(
-                    edge_index,
-                    args.hidden_dim,
-                    hidden_layers=args.hidden_layers,
+        self.edge_index = {
+            "grid_mesh0": self.g2m_edge_index,
+            "mesh0_grid": self.m2g_edge_index,
+            **{
+                f"mesh{i}_mesh{i+1}_proc{proc}": self.mesh_up_edge_index[i]
+                for i in range(self.num_levels - 1)
+                for proc in range(self.num_processor_layers)
+            },
+            **{
+                f"mesh{i+1}_mesh{i}_proc{proc}": self.mesh_down_edge_index[i]
+                for i in range(self.num_levels - 1)
+                for proc in range(self.num_processor_layers)
+            },
+            **{
+                f"mesh{i}_mesh{i}_up_proc{proc}": self.m2m_edge_index[i]
+                for i in range(self.num_levels - 1)
+                for proc in range(self.num_processor_layers)
+            },
+            **{
+                f"mesh{i}_mesh{i}_down_proc{proc}": self.m2m_edge_index[i]
+                for i in range(1, self.num_levels)
+                for proc in range(self.num_processor_layers)
+            },
+            **{"mesh0_mesh0_proclast": self.m2m_edge_index[0]},
+        }
+        self.edge_index = {
+            key: value
+            for key, value in self.edge_index.items()
+            if key in process_edge_feat_dims
+        }
+
+        subgraph_start_index = [0] + list(np.cumsum(self.level_mesh_sizes))
+        self.node_index = {
+            **{
+                f"mesh{i}": torch.arange(
+                    subgraph_start_index[i], subgraph_start_index[i + 1]
                 )
-                for edge_index in self.mesh_up_edge_index
-            ]
-        )
-
-        # Read out GNNs
-        self.mesh_read_gnns = nn.ModuleList(
-            [
-                InteractionNet(
-                    edge_index,
-                    args.hidden_dim,
-                    hidden_layers=args.hidden_layers,
-                    update_edges=False,
-                )
-                for edge_index in self.mesh_down_edge_index
-            ]
-        )
-
-    def hilam_init(self, args, config, datastore):
-        # Make down GNNs, both for down edges and same level
-        self.mesh_down_gnns = nn.ModuleList(
-            [self.make_down_gnns(args) for _ in range(args.processor_layers)]
-        )  # Nested lists (proc_steps, num_levels-1)
-        self.mesh_down_same_gnns = nn.ModuleList(
-            [self.make_same_gnns(args) for _ in range(args.processor_layers)]
-        )  # Nested lists (proc_steps, num_levels)
-
-        # Make up GNNs, both for up edges and same level
-        self.mesh_up_gnns = nn.ModuleList(
-            [self.make_up_gnns(args) for _ in range(args.processor_layers)]
-        )  # Nested lists (proc_steps, num_levels-1)
-        self.mesh_up_same_gnns = nn.ModuleList(
-            [self.make_same_gnns(args) for _ in range(args.processor_layers)]
-        )  # Nested lists (proc_steps, num_levels)
+                for i in range(0, self.num_levels)
+            },
+            "grid": torch.arange(
+                subgraph_start_index[-1],
+                subgraph_start_index[-1] + self.num_grid_nodes,
+            ),
+        }
 
     # start of armodel
     def _create_dataarray_from_tensor(
@@ -529,7 +408,6 @@ class SequentialGNN(pl.LightningModule):
                 dim=-1,
             )
 
-            # net_output = self.forward_process(grid_features)
             node_features_dict = {
                 "grid": grid_features,
                 **{
@@ -544,13 +422,18 @@ class SequentialGNN(pl.LightningModule):
                 "mesh0_grid": self.expand_to_batch(
                     self.m2g_features, batch_size
                 ),  # aka m2g
+                "mesh0_mesh0_proclast": self.expand_to_batch(
+                    self.m2m_features[0], batch_size
+                ),
                 **{
-                    f"mesh{i}_mesh{i}_proc{proc}": self.expand_to_batch(
-                        self.m2m_features[i], batch_size
+                    f"mesh{i}_mesh{i}_{direction}_proc{proc}": (
+                        self.expand_to_batch(self.m2m_features[i], batch_size)
                     )
                     for i in range(self.num_levels)
                     for proc in range(self.num_processor_layers)
-                    if f"mesh{i}_mesh{i}_proc{proc}" in self.edge_index
+                    for direction in ("up", "down")
+                    if f"mesh{i}_mesh{i}_{direction}_proc{proc}"
+                    in self.edge_index
                 },
                 **{
                     f"mesh{i}_mesh{i+1}_proc{proc}": self.expand_to_batch(
@@ -577,6 +460,9 @@ class SequentialGNN(pl.LightningModule):
                 self.edge_index,
                 self.process_steps,
             )
+
+            # in hilam, the output only contains the grid node features
+            net_output = net_output["grid"]
 
             if self.output_std:
                 pred_delta_mean, pred_std_raw = net_output.chunk(
@@ -1292,52 +1178,6 @@ class SequentialGNN(pl.LightningModule):
 
         return new_state
 
-    # def predict_step(self, prev_state, prev_prev_state, forcing):
-    #     """
-    #     Step state one step ahead using prediction model,
-    #     X_{t-1}, X_t -> X_t+1
-    #     prev_state: (B, num_grid_nodes, feature_dim), X_t
-    #     prev_prev_state: (B, num_grid_nodes, feature_dim), X_{t-1}
-    #     forcing: (B, num_grid_nodes, forcing_dim)
-    #     """
-    #     batch_size = prev_state.shape[0]
-
-    #     # Create full grid node features of shape
-    #       (B, num_grid_nodes, grid_dim)
-    #     grid_features = torch.cat(
-    #         (
-    #             prev_state,
-    #             prev_prev_state,
-    #             forcing,
-    #             self.expand_to_batch(self.grid_static_features, batch_size),
-    #         ),
-    #         dim=-1,
-    #     )
-
-    #     net_output = self.forward(grid_features)
-
-    #     if self.output_std:
-    #         pred_delta_mean, pred_std_raw = net_output.chunk(
-    #             2, dim=-1
-    #         )  # both (B, num_grid_nodes, d_f)
-    #         # NOTE: The predicted std. is not scaled in any way here
-    #         # linter for some reason does not think softplus is callable
-    #         # pylint: disable-next=not-callable
-    #         pred_std = torch.nn.functional.softplus(pred_std_raw)
-    #     else:
-    #         pred_delta_mean = net_output
-    #         pred_std = None
-
-    #     # Rescale with one-step difference statistics
-    #     rescaled_delta_mean = pred_delta_mean * self.diff_std + self.diff_mean
-
-    #     # Clamp values to valid range
-    #     # (also add the delta to the previous state)
-    #     new_state = self.get_clamped_new_state(
-    # rescaled_delta_mean, prev_state)
-
-    #     return new_state, pred_std
-
     # start of base_hi_graph_model
     def get_num_mesh(self):
         """
@@ -1351,348 +1191,6 @@ class SequentialGNN(pl.LightningModule):
             num_mesh_nodes - self.mesh_static_features[0].shape[0]
         )
         return num_mesh_nodes, num_mesh_nodes_ignore
-
-    def embedd_mesh_nodes(self):
-        """
-        Embed static mesh features
-        This embeds only bottom level, rest is done at beginning of
-        processing step
-        Returns tensor of shape (num_mesh_nodes[0], d_h)
-        """
-        return self.mesh_embedders[0](self.mesh_static_features[0])
-
-    def process_step(self, mesh_rep):
-        """
-        Process step of embedd-process-decode framework
-        Processes the representation on the mesh, possible in multiple steps
-
-        mesh_rep: has shape (B, num_mesh_nodes, d_h)
-        Returns mesh_rep: (B, num_mesh_nodes, d_h)
-        """
-        batch_size = mesh_rep.shape[0]
-
-        # EMBED REMAINING MESH NODES (levels >= 1) -
-        # Create list of mesh node representations for each level,
-        # each of size (B, num_mesh_nodes[l], d_h)
-        mesh_rep_levels = [mesh_rep] + [
-            self.expand_to_batch(emb(node_static_features), batch_size)
-            for emb, node_static_features in zip(
-                list(self.mesh_embedders)[1:],
-                list(self.mesh_static_features)[1:],
-            )
-        ]
-
-        # - EMBED EDGES -
-        # Embed edges, expand with batch dimension
-        mesh_same_rep = [
-            self.expand_to_batch(emb(edge_feat), batch_size)
-            for emb, edge_feat in zip(
-                self.mesh_same_embedders, self.m2m_features
-            )
-        ]
-        mesh_up_rep = [
-            self.expand_to_batch(emb(edge_feat), batch_size)
-            for emb, edge_feat in zip(
-                self.mesh_up_embedders, self.mesh_up_features
-            )
-        ]
-        mesh_down_rep = [
-            self.expand_to_batch(emb(edge_feat), batch_size)
-            for emb, edge_feat in zip(
-                self.mesh_down_embedders, self.mesh_down_features
-            )
-        ]
-
-        # - MESH INIT. -
-        # Let level_l go from 1 to L
-        for level_l, gnn in enumerate(self.mesh_init_gnns, start=1):
-            # Extract representations
-            send_node_rep = mesh_rep_levels[
-                level_l - 1
-            ]  # (B, num_mesh_nodes[l-1], d_h)
-            rec_node_rep = mesh_rep_levels[
-                level_l
-            ]  # (B, num_mesh_nodes[l], d_h)
-            edge_rep = mesh_up_rep[level_l - 1]
-
-            # Apply GNN
-            new_node_rep, new_edge_rep = gnn(
-                send_node_rep, rec_node_rep, edge_rep
-            )
-
-            # Update node and edge vectors in lists
-            mesh_rep_levels[
-                level_l
-            ] = new_node_rep  # (B, num_mesh_nodes[l], d_h)
-            mesh_up_rep[level_l - 1] = new_edge_rep  # (B, M_up[l-1], d_h)
-
-        # - PROCESSOR -
-        mesh_rep_levels, _, _, mesh_down_rep = self.hi_processor_step(
-            mesh_rep_levels, mesh_same_rep, mesh_up_rep, mesh_down_rep
-        )
-
-        # - MESH READ OUT. -
-        # Let level_l go from L-1 to 0
-        for level_l, gnn in zip(
-            range(self.num_levels - 2, -1, -1), reversed(self.mesh_read_gnns)
-        ):
-            # Extract representations
-            send_node_rep = mesh_rep_levels[
-                level_l + 1
-            ]  # (B, num_mesh_nodes[l+1], d_h)
-            rec_node_rep = mesh_rep_levels[
-                level_l
-            ]  # (B, num_mesh_nodes[l], d_h)
-            edge_rep = mesh_down_rep[level_l]
-
-            # Apply GNN
-            new_node_rep = gnn(send_node_rep, rec_node_rep, edge_rep)
-
-            # Update node and edge vectors in lists
-            mesh_rep_levels[
-                level_l
-            ] = new_node_rep  # (B, num_mesh_nodes[l], d_h)
-
-        # Return only bottom level representation
-        return mesh_rep_levels[0]  # (B, num_mesh_nodes[0], d_h)
-
-    # start of hi_lam
-    def make_same_gnns(self, args):
-        """
-        Make intra-level GNNs.
-        """
-        return nn.ModuleList(
-            [
-                InteractionNet(
-                    edge_index,
-                    args.hidden_dim,
-                    hidden_layers=args.hidden_layers,
-                )
-                for edge_index in self.m2m_edge_index
-            ]
-        )
-
-    def make_up_gnns(self, args):
-        """
-        Make GNNs for processing steps up through the hierarchy.
-        """
-        return nn.ModuleList(
-            [
-                InteractionNet(
-                    edge_index,
-                    args.hidden_dim,
-                    hidden_layers=args.hidden_layers,
-                )
-                for edge_index in self.mesh_up_edge_index
-            ]
-        )
-
-    def make_down_gnns(self, args):
-        """
-        Make GNNs for processing steps down through the hierarchy.
-        """
-        return nn.ModuleList(
-            [
-                InteractionNet(
-                    edge_index,
-                    args.hidden_dim,
-                    hidden_layers=args.hidden_layers,
-                )
-                for edge_index in self.mesh_down_edge_index
-            ]
-        )
-
-    def mesh_down_step(
-        self,
-        mesh_rep_levels,
-        mesh_same_rep,
-        mesh_down_rep,
-        down_gnns,
-        same_gnns,
-    ):
-        """
-        Run down-part of vertical processing, sequentially alternating between
-        processing using down edges and same-level edges.
-        """
-        # Run same level processing on level L
-        mesh_rep_levels[-1], mesh_same_rep[-1] = same_gnns[-1](
-            mesh_rep_levels[-1], mesh_rep_levels[-1], mesh_same_rep[-1]
-        )
-
-        # Let level_l go from L-1 to 0
-        for level_l, down_gnn, same_gnn in zip(
-            range(self.num_levels - 2, -1, -1),
-            reversed(down_gnns),
-            reversed(same_gnns[:-1]),
-        ):
-            # Extract representations
-            send_node_rep = mesh_rep_levels[
-                level_l + 1
-            ]  # (B, N_mesh[l+1], d_h)
-            rec_node_rep = mesh_rep_levels[level_l]  # (B, N_mesh[l], d_h)
-            down_edge_rep = mesh_down_rep[level_l]
-            same_edge_rep = mesh_same_rep[level_l]
-
-            # Apply down GNN
-            new_node_rep, mesh_down_rep[level_l] = down_gnn(
-                send_node_rep, rec_node_rep, down_edge_rep
-            )
-
-            # Run same level processing on level l
-            mesh_rep_levels[level_l], mesh_same_rep[level_l] = same_gnn(
-                new_node_rep, new_node_rep, same_edge_rep
-            )
-            # (B, N_mesh[l], d_h) and (B, M_same[l], d_h)
-
-        return mesh_rep_levels, mesh_same_rep, mesh_down_rep
-
-    def mesh_up_step(
-        self, mesh_rep_levels, mesh_same_rep, mesh_up_rep, up_gnns, same_gnns
-    ):
-        """
-        Run up-part of vertical processing, sequentially alternating between
-        processing using up edges and same-level edges.
-        """
-
-        # Run same level processing on level 0
-        mesh_rep_levels[0], mesh_same_rep[0] = same_gnns[0](
-            mesh_rep_levels[0], mesh_rep_levels[0], mesh_same_rep[0]
-        )
-
-        # Let level_l go from 1 to L
-        for level_l, (up_gnn, same_gnn) in enumerate(
-            zip(up_gnns, same_gnns[1:]), start=1
-        ):
-            # Extract representations
-            send_node_rep = mesh_rep_levels[
-                level_l - 1
-            ]  # (B, N_mesh[l-1], d_h)
-            rec_node_rep = mesh_rep_levels[level_l]  # (B, N_mesh[l], d_h)
-            up_edge_rep = mesh_up_rep[level_l - 1]
-            same_edge_rep = mesh_same_rep[level_l]
-
-            # Apply up GNN
-            new_node_rep, mesh_up_rep[level_l - 1] = up_gnn(
-                send_node_rep, rec_node_rep, up_edge_rep
-            )
-            # (B, N_mesh[l], d_h) and (B, M_up[l-1], d_h)
-
-            # Run same level processing on level l
-            mesh_rep_levels[level_l], mesh_same_rep[level_l] = same_gnn(
-                new_node_rep, new_node_rep, same_edge_rep
-            )
-            # (B, N_mesh[l], d_h) and (B, M_same[l], d_h)
-
-        return mesh_rep_levels, mesh_same_rep, mesh_up_rep
-
-    def hi_processor_step(
-        self, mesh_rep_levels, mesh_same_rep, mesh_up_rep, mesh_down_rep
-    ):
-        """
-        Internal processor step of hierarchical graph models.
-        Between mesh init and read out.
-
-        Each input is list with representations, each with shape
-
-        mesh_rep_levels: (B, N_mesh[l], d_h)
-        mesh_same_rep: (B, M_same[l], d_h)
-        mesh_up_rep: (B, M_up[l -> l+1], d_h)
-        mesh_down_rep: (B, M_down[l <- l+1], d_h)
-
-        Returns same lists
-        """
-        for down_gnns, down_same_gnns, up_gnns, up_same_gnns in zip(
-            self.mesh_down_gnns,
-            self.mesh_down_same_gnns,
-            self.mesh_up_gnns,
-            self.mesh_up_same_gnns,
-        ):
-            # Down
-            mesh_rep_levels, mesh_same_rep, mesh_down_rep = self.mesh_down_step(
-                mesh_rep_levels,
-                mesh_same_rep,
-                mesh_down_rep,
-                down_gnns,
-                down_same_gnns,
-            )
-
-            # Up
-            mesh_rep_levels, mesh_same_rep, mesh_up_rep = self.mesh_up_step(
-                mesh_rep_levels,
-                mesh_same_rep,
-                mesh_up_rep,
-                up_gnns,
-                up_same_gnns,
-            )
-
-        # NOTE: We return all, even though only down edges really are used
-        # later
-        return mesh_rep_levels, mesh_same_rep, mesh_up_rep, mesh_down_rep
-
-    def forward_process(self, grid_features):
-        """
-        performs a single pass through the encoders, processing gnns and
-        decoders
-        """
-        # input for instantiation: node names and input dimensions for
-        # encoders, name and order of edge sets for interaction nets, name of
-        # node sets to return
-
-        # input: prev states, forcing, static node and edge features, adjecency
-        # matrix for each step of message passing.
-        # Or be agnostic as to static/forcing/state?
-
-        # embed physical grid features (prev states, forcing, static features
-        # (loop over input grids?))
-        # embed computational mesh node static features
-        # (loop over mesh levels)
-        # embed edge static features
-        # (loop over mesh level connections up/down/same)
-        # pass messages (loop over mesh level connections)
-        # deembed physical grid node features
-
-        # return deembedded values
-
-        batch_size = grid_features.shape[0]
-
-        # Embed all features
-        grid_emb = self.grid_embedder(grid_features)  # (B, num_grid_nodes, d_h)
-
-        # Embed constant features
-        g2m_emb = self.g2m_embedder(self.g2m_features)  # (M_g2m, d_h)
-        m2g_emb = self.m2g_embedder(self.m2g_features)  # (M_m2g, d_h)
-        mesh_emb = self.embedd_mesh_nodes()
-
-        # Map from grid to mesh
-        mesh_emb_expanded = self.expand_to_batch(
-            mesh_emb, batch_size
-        )  # (B, num_mesh_nodes, d_h)
-        g2m_emb_expanded = self.expand_to_batch(g2m_emb, batch_size)
-
-        # This also splits representation into grid and mesh
-        mesh_rep = self.g2m_gnn(
-            grid_emb, mesh_emb_expanded, g2m_emb_expanded
-        )  # (B, num_mesh_nodes, d_h)
-        # Also MLP with residual for grid representation
-        grid_rep = grid_emb + self.encoding_grid_mlp(
-            grid_emb
-        )  # (B, num_grid_nodes, d_h)
-
-        # Run processor step
-        mesh_rep = self.process_step(mesh_rep)
-
-        # Map back from mesh to grid
-        m2g_emb_expanded = self.expand_to_batch(m2g_emb, batch_size)
-        grid_rep = self.m2g_gnn(
-            mesh_rep, grid_rep, m2g_emb_expanded
-        )  # (B, num_grid_nodes, d_h)
-
-        # Map to output dimension, only for grid
-        net_output = self.output_map(
-            grid_rep
-        )  # (B, num_grid_nodes, d_grid_out)
-
-        return net_output
 
 
 # input for instantiation: node names and input dimensions for encoders, name
@@ -1831,7 +1329,7 @@ class SequentialGNNModel(torch.nn.Module):
         # Deembed output nodes
         for subgraph_name, deembedder in self.node_deembedders.items():
             node_out_features[subgraph_name] = deembedder(
-                node_embeddings[subgraph_name]
+                node_embeddings[:, node_index[subgraph_name], :]
             )
 
         return node_out_features
