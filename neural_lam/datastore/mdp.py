@@ -3,7 +3,7 @@ import copy
 import warnings
 from functools import cached_property
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Union
 
 # Third-party
 import cartopy.crs as ccrs
@@ -143,7 +143,8 @@ class MDPDatastore(BaseRegularGridDatastore):
 
         """
         da_dt = self._ds["time"].diff("time")
-        return (da_dt.dt.seconds[0] // 3600).item()
+        total_sec = da_dt.dt.total_seconds().isel(time=0).astype(int)
+        return (total_sec // 3600).item()
 
     def get_vars_units(self, category: str) -> List[str]:
         """Return the units of the variables in the given category.
@@ -220,8 +221,11 @@ class MDPDatastore(BaseRegularGridDatastore):
         return len(self.get_vars_names(category))
 
     def get_dataarray(
-        self, category: str, split: str, standardize: bool = False
-    ) -> xr.DataArray:
+        self,
+        category: str,
+        split: Optional[str],
+        standardize: bool = False,
+    ) -> Union[xr.DataArray, None]:
         """
         Return the processed data (as a single `xr.DataArray`) for the given
         category of data and test/train/val-split that covers all the data (in
