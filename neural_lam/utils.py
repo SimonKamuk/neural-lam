@@ -44,6 +44,37 @@ class BufferList(nn.Module):
         return (self[i] for i in range(len(self)))
 
 
+class BufferDict(nn.Module):
+    """
+    A dict of torch buffer tensors that sit together as a Module with no
+    parameters and only buffers.
+    """
+
+    def __init__(self, input_dict, persistent=True):
+        super().__init__()
+        self.input_dict = input_dict
+        for buffer_name, tensor in input_dict.items():
+            self.register_buffer(buffer_name, tensor, persistent=persistent)
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def __len__(self):
+        return len(self.input_dict)
+
+    def __iter__(self):
+        return (self[i] for i in self.input_dict)
+
+    def keys(self):
+        return self.input_dict.keys()
+
+    def values(self):
+        return (getattr(self, key) for key in self.input_dict.keys())
+
+    def items(self):
+        return ((key, getattr(self, key)) for key in self.input_dict.keys())
+
+
 def load_graph(graph_dir_path, device="cpu"):
     """Load all tensors representing the graph from `graph_dir_path`.
 
